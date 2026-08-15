@@ -43,7 +43,13 @@ always directed in the pool's favor. The tick conversion functions are
 exact and are pinned bit-for-bit by test vectors from an independent
 big-integer reference implementation.
 
-## Module map
+## Package layout
+
+The repository holds two packages that mirror the classic core and
+periphery split: the core is meant to be frozen, the periphery is
+meant to be replaced as better versions are written.
+
+**Core** (`/`) holds the funds and the invariants:
 
 | Module | Purpose |
 | --- | --- |
@@ -56,6 +62,21 @@ big-integer reference implementation.
 | `swap_math` | Single-step swap computation and fee carving |
 | `i32`, `i128` | Checked signed arithmetic over unsigned words |
 | `math_u128`, `math_u256` | Widening, wrapping, and bit-scan helpers |
+
+**Periphery** (`/periphery`) holds the guards users need and the core
+deliberately omits. It builds only on the core's public API:
+
+| Module | Purpose |
+| --- | --- |
+| `router` | Swaps with minimum-output / maximum-input bounds, deadlines, and all-or-nothing fills |
+| `liquidity` | Position management in coin terms: budgets in, liquidity out, change back |
+| `liquidity_amounts` | Token amounts to liquidity conversion for a price range |
+| `quoter` | Exact read-only swap quotes that replay the engine against `&Pool` |
+
+Multi-hop routing needs no path encoding here: chain single hops in
+one programmable transaction and put the real minimum on the final
+hop. Pools whose operations are hook-gated are served by their hook's
+package instead of this router.
 
 ## Fees
 
@@ -73,14 +94,16 @@ deploy it against real value.
 ## Building and testing
 
 ```bash
-haneul move build
-haneul move test
+haneul move build && haneul move test            # core
+cd periphery && haneul move build && haneul move test
 ```
 
-The test suite (111 tests) covers the math layer with reference-pinned
+The core suite (111 tests) covers the math layer with reference-pinned
 vectors, tick bitmap navigation, the full swap pipeline including tick
 crossing and fee attribution, receipt enforcement, hook gating, and
-dynamic fees.
+dynamic fees. The periphery suite (30 tests) pins the router guards,
+liquidity conversion, and quoter against the same reference scenarios,
+including quote-then-execute equality checks.
 
 ## License
 

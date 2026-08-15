@@ -1,0 +1,188 @@
+// Copyright (c) Haneul Labs
+// SPDX-License-Identifier: Apache-2.0
+
+/// Price movement and token amounts as functions of liquidity.
+///
+/// Within one tick range, the pool behaves as a constant-product curve
+/// with virtual reserves. With sqrt price P (Q32.64) and liquidity L:
+///
+///   amount_a between prices Pa < Pb:  L * (Pb - Pa) / (Pb * Pa) * 2^64
+///   amount_b between prices Pa < Pb:  L * (Pb - Pa) / 2^64
+///
+/// Rounding is always directed in the pool's favor: amounts a swapper
+/// or LP must pay round up, amounts paid out round down. The pool can
+/// therefore never be under-collateralized by rounding drift.
+///
+/// Domain: token amounts are u64 (the coin balance width), liquidity is
+/// u128, prices are u128. Every product below is bounded by 2^256:
+///   - L * price       < 2^128 * 2^128 = 2^256 (exact via full_mul)
+///   - (L * dP) << 64 requires L * dP < 2^192; violating inputs abort
+///     rather than truncate. A pool cannot reach such inputs because
+///     per-tick liquidity is capped (see `tick::max_liquidity_per_tick`).
+module haneul_amm::sqrt_price_math {
+    use haneul_amm::math_u128;
+    use haneul_amm::math_u256;
+
+    /// Price or liquidity input was zero.
+    const EInvalidInput: u64 = 0;
+    /// The requested output exceeds what the available liquidity can
+    /// provide in this direction.
+    const ENotEnoughLiquidity: u64 = 1;
+    /// Computed price left the representable range.
+    const EPriceOverflow: u64 = 2;
+    /// Computed token amount does not fit in a coin balance (u64).
+    const EAmountOverflow: u64 = 3;
+
+    const MAX_U64: u256 = 0xFFFFFFFFFFFFFFFF;
+    const MAX_U128: u256 = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF;
+
+    /// Next sqrt price after adding (`add = true`) or removing amount_a
+    /// of token A to/from the virtual reserves. Adding A pushes the
+    /// price down; removing pushes it up. Rounds up in both cases so the
+    /// price moves no further than the exact-math price.
+    ///
+    /// Formula: L * P * 2^64 / (L * 2^64 +- amount * P), full precision.
+    public fun next_sqrt_price_from_amount_a_rounding_up(
+        sqrt_price_x64: u128,
+        liquidity: u128,
+        amount: u64,
+        add: bool,
+    ): u128 {
+        if (amount == 0) return sqrt_price_x64;
+        let numerator = math_u256::checked_shlw(
+            math_u128::full_mul(liquidity, sqrt_price_x64),
+        );
+        let liquidity_shl = (liquidity as u256) << 64;
+        let product = (amount as u256) * (sqrt_price_x64 as u256);
+
+        let denominator = if (add) {
+            liquidity_shl + product
+        } else {
+            // Removing A: price rises. The virtual reserve of A must
+            // stay positive after removal.
+            assert!(liquidity_shl > product, ENotEnoughLiquidity);
+            liquidity_shl - product
+        };
+
+        let r = math_u256::div_round(numerator, denominator, true);
+        assert!(r <= MAX_U128, EPriceOverflow);
+        (r as u128)
+    }
+
+    /// Next sqrt price after adding or removing amount_b of token B.
+    /// Adding B pushes the price up; removing pushes it down. Rounds
+    /// down (the price moves no further than the exact-math price:
+    /// the delta added is floored, the delta subtracted is ceiled).
+    ///
+    /// Formula: P +- amount * 2^64 / L, full precision.
+    public fun next_sqrt_price_from_amount_b_rounding_down(
+        sqrt_price_x64: u128,
+        liquidity: u128,
+        amount: u64,
+        add: bool,
+    ): u128 {
+        let numerator = (amount as u256) << 64;
+        if (add) {
+            let quotient = numerator / (liquidity as u256);
+            let r = (sqrt_price_x64 as u256) + quotient;
+            assert!(r <= MAX_U128, EPriceOverflow);
+            (r as u128)
+        } else {
+            let quotient = math_u256::div_round(numerator, (liquidity as u256), true);
+            assert!((sqrt_price_x64 as u256) > quotient, ENotEnoughLiquidity);
+            sqrt_price_x64 - (quotient as u128)
+        }
+    }
+
+    /// Next sqrt price given an exact input amount of the appropriate
+    /// token for the swap direction. `a_to_b = true` means token A goes
+    /// in and the price falls.
+    public fun next_sqrt_price_from_input(
+        sqrt_price_x64: u128,
+        liquidity: u128,
+        amount_in: u64,
+        a_to_b: bool,
+    ): u128 {
+        assert!(sqrt_price_x64 > 0 && liquidity > 0, EInvalidInput);
+        if (a_to_b) {
+            next_sqrt_price_from_amount_a_rounding_up(sqrt_price_x64, liquidity, amount_in, true)
+        } else {
+            next_sqrt_price_from_amount_b_rounding_down(
+                sqrt_price_x64,
+                liquidity,
+                amount_in,
+                true,
+            )
+        }
+    }
+
+    /// Next sqrt price given an exact output amount. `a_to_b = true`
+    /// means token B comes out and the price falls.
+    public fun next_sqrt_price_from_output(
+        sqrt_price_x64: u128,
+        liquidity: u128,
+        amount_out: u64,
+        a_to_b: bool,
+    ): u128 {
+        assert!(sqrt_price_x64 > 0 && liquidity > 0, EInvalidInput);
+        if (a_to_b) {
+            next_sqrt_price_from_amount_b_rounding_down(
+                sqrt_price_x64,
+                liquidity,
+                amount_out,
+                false,
+            )
+        } else {
+            next_sqrt_price_from_amount_a_rounding_up(
+                sqrt_price_x64,
+                liquidity,
+                amount_out,
+                false,
+            )
+        }
+    }
+
+    /// Amount of token A held between two prices at the given liquidity.
+    /// Price argument order does not matter.
+    public fun get_amount_a_delta(
+        sqrt_price_0: u128,
+        sqrt_price_1: u128,
+        liquidity: u128,
+        round_up: bool,
+    ): u64 {
+        let (lo, hi) = sort(sqrt_price_0, sqrt_price_1);
+        assert!(lo > 0, EInvalidInput);
+        if (liquidity == 0 || lo == hi) return 0;
+
+        // L * (hi - lo) * 2^64 / (hi * lo), rounded once in the caller's
+        // direction (a single full-precision division, so no compounded
+        // rounding error).
+        let numerator = math_u256::checked_shlw(math_u128::full_mul(liquidity, hi - lo));
+        let denominator = math_u128::full_mul(hi, lo);
+        let r = math_u256::div_round(numerator, denominator, round_up);
+        assert!(r <= MAX_U64, EAmountOverflow);
+        (r as u64)
+    }
+
+    /// Amount of token B held between two prices at the given liquidity.
+    /// Price argument order does not matter.
+    public fun get_amount_b_delta(
+        sqrt_price_0: u128,
+        sqrt_price_1: u128,
+        liquidity: u128,
+        round_up: bool,
+    ): u64 {
+        let (lo, hi) = sort(sqrt_price_0, sqrt_price_1);
+        if (liquidity == 0 || lo == hi) return 0;
+
+        // L * (hi - lo) / 2^64.
+        let product = math_u128::full_mul(liquidity, hi - lo);
+        let r = math_u256::div_round(product, 1 << 64, round_up);
+        assert!(r <= MAX_U64, EAmountOverflow);
+        (r as u64)
+    }
+
+    fun sort(a: u128, b: u128): (u128, u128) {
+        if (a <= b) (a, b) else (b, a)
+    }
+}

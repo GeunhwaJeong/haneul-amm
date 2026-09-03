@@ -1,4 +1,4 @@
-// Copyright (c) Haneul Labs
+// Copyright (c) 2026 Geunhwa Jeong
 // SPDX-License-Identifier: Apache-2.0
 
 /// Marker coin types for tests. Their fully qualified names sort

@@ -1,4 +1,4 @@
-// Copyright (c) Haneul Labs
+// Copyright (c) 2026 Geunhwa Jeong
 // SPDX-License-Identifier: Apache-2.0
 
 /// Package initialization: shares the pool registry, mints the
@@ -20,6 +20,10 @@ module haneul_amm::haneul_amm {
         transfer::public_transfer(pool::new_protocol_cap(ctx), ctx.sender());
 
         let publisher = package::claim(otw, ctx);
+        // Fields a wallet can show without indexing: which pool the
+        // position belongs to and how much liquidity it holds. Tick
+        // bounds are two's complement bit patterns on the object and
+        // would mislead as raw numbers, so they are left to explorers.
         let mut position_display = display::new<Position>(&publisher, ctx);
         position_display.add(
             utf8(b"name"),
@@ -27,8 +31,10 @@ module haneul_amm::haneul_amm {
         );
         position_display.add(
             utf8(b"description"),
-            utf8(b"A concentrated liquidity position on a Haneul AMM pool."),
+            utf8(b"Concentrated liquidity of {liquidity} units on Haneul AMM pool {pool_id}."),
         );
+        position_display.add(utf8(b"pool_id"), utf8(b"{pool_id}"));
+        position_display.add(utf8(b"liquidity"), utf8(b"{liquidity}"));
         position_display.update_version();
         transfer::public_transfer(position_display, ctx.sender());
         transfer::public_transfer(publisher, ctx.sender());

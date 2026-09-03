@@ -1,4 +1,4 @@
-# Copyright (c) Haneul Labs
+# Copyright (c) 2026 Geunhwa Jeong
 # SPDX-License-Identifier: Apache-2.0
 #
 # Generates tests/swap_matrix_vectors.move: reference-pinned expected
@@ -94,7 +94,7 @@ def move_vec_bool(name, values):
 def main():
     cases = run()
     lines = []
-    lines.append("// Copyright (c) Haneul Labs")
+    lines.append("// Copyright (c) 2026 Geunhwa Jeong")
     lines.append("// SPDX-License-Identifier: Apache-2.0")
     lines.append("")
     lines.append("/// GENERATED FILE - do not edit by hand.")

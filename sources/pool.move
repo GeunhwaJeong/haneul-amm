@@ -681,6 +681,80 @@ module haneul_amm::pool {
         &pool.ticks
     }
 
+    /// Principal that `liquidity` between `lower` and `upper` represents
+    /// at the pool's current price: what an add would charge when
+    /// `round_up`, what a remove would pay out otherwise. The position
+    /// classification uses the stored tick, exactly as the liquidity
+    /// paths do, so this is the figure those paths will use.
+    public fun amounts_for_liquidity<A, B>(
+        pool: &Pool<A, B>,
+        lower: I32,
+        upper: I32,
+        liquidity: u128,
+        round_up: bool,
+    ): (u64, u64) {
+        let price_lower = tick_math::get_sqrt_price_at_tick(lower);
+        let price_upper = tick_math::get_sqrt_price_at_tick(upper);
+
+        if (i32::lt(pool.tick_current, lower)) {
+            // Range entirely above the price: becomes active only when
+            // the price rises into it, so it is denominated in A.
+            (
+                sqrt_price_math::get_amount_a_delta(
+                    price_lower,
+                    price_upper,
+                    liquidity,
+                    round_up,
+                ),
+                0,
+            )
+        } else if (i32::lt(pool.tick_current, upper)) {
+            // Range straddles the price: both tokens.
+            (
+                sqrt_price_math::get_amount_a_delta(
+                    pool.sqrt_price_x64,
+                    price_upper,
+                    liquidity,
+                    round_up,
+                ),
+                sqrt_price_math::get_amount_b_delta(
+                    price_lower,
+                    pool.sqrt_price_x64,
+                    liquidity,
+                    round_up,
+                ),
+            )
+        } else {
+            // Range entirely below the price: denominated in B.
+            (
+                0,
+                sqrt_price_math::get_amount_b_delta(
+                    price_lower,
+                    price_upper,
+                    liquidity,
+                    round_up,
+                ),
+            )
+        }
+    }
+
+    /// Replay a swap against the current state without applying it.
+    /// Returns (amount_in including fees, amount_out, protocol fee,
+    /// sqrt price after, tick after, in-range liquidity after). Exact
+    /// for the state it reads; it is the same walk `swap_*` performs.
+    /// Hook gating is not consulted: a quote moves nothing.
+    public fun simulate_swap<A, B>(
+        pool: &Pool<A, B>,
+        a_to_b: bool,
+        exact_in: bool,
+        amount: u64,
+        sqrt_price_limit: u128,
+        lp_fee_override: Option<u64>,
+    ): (u64, u64, u64, u128, I32, u128) {
+        let w = pool.walk(a_to_b, exact_in, amount, sqrt_price_limit, lp_fee_override);
+        (w.amount_in, w.amount_out, w.protocol_fee, w.sqrt_price, w.tick, w.liquidity)
+    }
+
     /// Amounts of the receipt a swap must repay: (owed, protocol cut).
     public fun swap_receipt_amounts(receipt: &SwapReceipt): (u64, u64) {
         (receipt.amount_owed, receipt.protocol_fee)
@@ -744,8 +818,32 @@ module haneul_amm::pool {
         (pool.balance_a.split(amount_out), receipt)
     }
 
-    /// The tick-walking swap loop. Returns (input owed including all
-    /// fees, output owed to the swapper, protocol's cut of the input).
+    /// A tick crossed during a walk, with the global fee growth at the
+    /// moment of crossing (which is what the tick's outside checkpoint
+    /// must be folded against).
+    public struct Crossing has copy, drop {
+        tick: I32,
+        fee_growth_a: u128,
+        fee_growth_b: u128,
+    }
+
+    /// Everything a swap changes, computed against `&Pool` so the same
+    /// code serves quotes and executions.
+    public struct Walk has drop {
+        amount_in: u64,
+        amount_out: u64,
+        protocol_fee: u64,
+        lp_fee: u64,
+        sqrt_price: u128,
+        tick: I32,
+        liquidity: u128,
+        fee_growth_input: u128,
+        crossings: vector<Crossing>,
+    }
+
+    /// Apply a walk: fold crossed ticks, write the new price state,
+    /// emit the event. Returns (input owed including all fees, output
+    /// owed to the swapper, protocol's cut of the input).
     fun swap_engine<A, B>(
         pool: &mut Pool<A, B>,
         a_to_b: bool,
@@ -755,6 +853,50 @@ module haneul_amm::pool {
         lp_fee_override: Option<u64>,
     ): (u64, u64, u64) {
         pool.assert_version();
+        let w = pool.walk(a_to_b, exact_in, amount, sqrt_price_limit, lp_fee_override);
+
+        let mut i = 0;
+        let n = w.crossings.length();
+        while (i < n) {
+            let c = &w.crossings[i];
+            pool.ticks.cross(c.tick, c.fee_growth_a, c.fee_growth_b);
+            i = i + 1;
+        };
+
+        pool.sqrt_price_x64 = w.sqrt_price;
+        pool.tick_current = w.tick;
+        pool.liquidity = w.liquidity;
+        if (a_to_b) {
+            pool.fee_growth_global_a = w.fee_growth_input;
+        } else {
+            pool.fee_growth_global_b = w.fee_growth_input;
+        };
+
+        event::emit(Swapped {
+            pool_id: pool.id.to_inner(),
+            a_to_b,
+            amount_in: w.amount_in,
+            amount_out: w.amount_out,
+            protocol_fee: w.protocol_fee,
+            lp_fee_pips: w.lp_fee,
+            sqrt_price_x64: w.sqrt_price,
+            liquidity: w.liquidity,
+            tick_bits: w.tick.bits(),
+        });
+
+        (w.amount_in, w.amount_out, w.protocol_fee)
+    }
+
+    /// The tick-walking swap loop, read-only. Crossed ticks are
+    /// recorded rather than folded so the walk can serve as a quote.
+    fun walk<A, B>(
+        pool: &Pool<A, B>,
+        a_to_b: bool,
+        exact_in: bool,
+        amount: u64,
+        sqrt_price_limit: u128,
+        lp_fee_override: Option<u64>,
+    ): Walk {
         assert!(amount > 0, ESwapAmountZero);
 
         // The limit must sit strictly between the current price and the
@@ -804,6 +946,7 @@ module haneul_amm::pool {
             pool.fee_growth_global_b
         };
         let mut protocol_fee_total: u128 = 0;
+        let mut crossings = vector[];
 
         while (amount_remaining > 0 && sqrt_price != sqrt_price_limit) {
             let sqrt_price_start = sqrt_price;
@@ -873,7 +1016,12 @@ module haneul_amm::pool {
                     } else {
                         (pool.fee_growth_global_a, fee_growth_input)
                     };
-                    let mut liquidity_net = pool.ticks.cross(tick_next, fg_a, fg_b);
+                    crossings.push_back(Crossing {
+                        tick: tick_next,
+                        fee_growth_a: fg_a,
+                        fee_growth_b: fg_b,
+                    });
+                    let mut liquidity_net = pool.ticks.liquidity_net(tick_next);
                     // Moving down, in-range liquidity changes by the
                     // negated net amount.
                     if (a_to_b) {
@@ -896,18 +1044,6 @@ module haneul_amm::pool {
             };
         };
 
-        // Write back.
-        pool.sqrt_price_x64 = sqrt_price;
-        pool.tick_current = tick_cur;
-        if (pool.liquidity != liq) {
-            pool.liquidity = liq;
-        };
-        if (a_to_b) {
-            pool.fee_growth_global_a = fee_growth_input;
-        } else {
-            pool.fee_growth_global_b = fee_growth_input;
-        };
-
         assert!(protocol_fee_total <= (MAX_U64 as u128), EAmountOverflow);
         assert!(amount_calculated <= (MAX_U64 as u128), EAmountOverflow);
         let consumed = amount - amount_remaining;
@@ -917,19 +1053,17 @@ module haneul_amm::pool {
             ((amount_calculated as u64), consumed)
         };
 
-        event::emit(Swapped {
-            pool_id: pool.id.to_inner(),
-            a_to_b,
+        Walk {
             amount_in,
             amount_out,
             protocol_fee: (protocol_fee_total as u64),
-            lp_fee_pips: lp_fee,
-            sqrt_price_x64: sqrt_price,
+            lp_fee,
+            sqrt_price,
+            tick: tick_cur,
             liquidity: liq,
-            tick_bits: tick_cur.bits(),
-        });
-
-        (amount_in, amount_out, (protocol_fee_total as u64))
+            fee_growth_input,
+            crossings,
+        }
     }
 
     // === Internals: liquidity ===
@@ -1065,53 +1199,12 @@ module haneul_amm::pool {
         };
 
         // 4. Principal amounts depend on where the current price sits
-        //    relative to the range.
-        let magnitude = liquidity_delta.abs_u128();
-        let round_up = !removing;
-        let price_lower = tick_math::get_sqrt_price_at_tick(lower);
-        let price_upper = tick_math::get_sqrt_price_at_tick(upper);
-
-        if (i32::lt(pool.tick_current, lower)) {
-            // Range entirely above the price: becomes active only when
-            // the price rises into it, so it is denominated in A.
-            (
-                sqrt_price_math::get_amount_a_delta(
-                    price_lower,
-                    price_upper,
-                    magnitude,
-                    round_up,
-                ),
-                0,
-            )
-        } else if (i32::lt(pool.tick_current, upper)) {
-            // Range straddles the price: both tokens, and the pool's
-            // in-range liquidity changes right now.
-            let amount_a = sqrt_price_math::get_amount_a_delta(
-                pool.sqrt_price_x64,
-                price_upper,
-                magnitude,
-                round_up,
-            );
-            let amount_b = sqrt_price_math::get_amount_b_delta(
-                price_lower,
-                pool.sqrt_price_x64,
-                magnitude,
-                round_up,
-            );
+        //    relative to the range; a range that straddles the price
+        //    also changes the pool's in-range liquidity right now.
+        if (i32::gte(pool.tick_current, lower) && i32::lt(pool.tick_current, upper)) {
             pool.liquidity = tick::add_liquidity_delta(pool.liquidity, liquidity_delta);
-            (amount_a, amount_b)
-        } else {
-            // Range entirely below the price: denominated in B.
-            (
-                0,
-                sqrt_price_math::get_amount_b_delta(
-                    price_lower,
-                    price_upper,
-                    magnitude,
-                    round_up,
-                ),
-            )
-        }
+        };
+        pool.amounts_for_liquidity(lower, upper, liquidity_delta.abs_u128(), !removing)
     }
 
     fun donate_impl<A, B>(

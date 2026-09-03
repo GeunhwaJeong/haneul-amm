@@ -49,6 +49,9 @@ module haneul_amm::tick {
     /// All tick state for one pool.
     public struct TickTable has store {
         spacing: u32,
+        /// `max_liquidity_per_tick(spacing)`, fixed at creation so the
+        /// hot path does not redo the division on every update.
+        max_liquidity: u128,
         ticks: Table<I32, TickInfo>,
         /// word index -> 256 initialized-bits, one per spaced tick.
         bitmap: Table<I32, u256>,
@@ -57,6 +60,7 @@ module haneul_amm::tick {
     public(package) fun new(spacing: u32, ctx: &mut TxContext): TickTable {
         TickTable {
             spacing,
+            max_liquidity: max_liquidity_per_tick(spacing),
             ticks: table::new(ctx),
             bitmap: table::new(ctx),
         }
@@ -64,6 +68,11 @@ module haneul_amm::tick {
 
     public fun spacing(self: &TickTable): u32 {
         self.spacing
+    }
+
+    /// The per-tick liquidity cap this table enforces.
+    public fun max_liquidity(self: &TickTable): u128 {
+        self.max_liquidity
     }
 
     /// Cap on `liquidity_gross` per tick, chosen so that the sum over
@@ -109,10 +118,7 @@ module haneul_amm::tick {
 
         let gross_before = info.liquidity_gross;
         let gross_after = add_liquidity_delta(gross_before, liquidity_delta);
-        assert!(
-            gross_after <= max_liquidity_per_tick(self.spacing),
-            ETickLiquidityOverflow,
-        );
+        assert!(gross_after <= self.max_liquidity, ETickLiquidityOverflow);
 
         if (gross_before == 0) {
             // Convention: all fee growth before a tick's first use is
@@ -360,7 +366,7 @@ module haneul_amm::tick {
 
     #[test_only]
     public fun destroy_for_testing(self: TickTable) {
-        let TickTable { spacing: _, ticks, bitmap } = self;
+        let TickTable { spacing: _, max_liquidity: _, ticks, bitmap } = self;
         ticks.drop();
         bitmap.drop();
     }

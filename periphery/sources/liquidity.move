@@ -22,10 +22,8 @@ module haneul_amm_periphery::liquidity {
     use haneul::balance;
     use haneul::clock::Clock;
     use haneul::coin::{Self, Coin};
-    use haneul_amm::i32;
     use haneul_amm::pool::{Self, Pool};
     use haneul_amm::position::Position;
-    use haneul_amm::sqrt_price_math;
     use haneul_amm::tick_math;
     use haneul_amm_periphery::liquidity_amounts;
 
@@ -182,45 +180,13 @@ module haneul_amm_periphery::liquidity {
     }
 
     /// Principal the pool will charge for adding `liquidity` to this
-    /// position right now: the same three price-region cases as the
-    /// core, with the same round-up direction.
+    /// position right now.
     fun required_amounts<A, B>(
         pool: &Pool<A, B>,
         pos: &Position,
         liquidity: u128,
     ): (u64, u64) {
-        let lower = pos.tick_lower();
-        let upper = pos.tick_upper();
-        let price_lower = tick_math::get_sqrt_price_at_tick(lower);
-        let price_upper = tick_math::get_sqrt_price_at_tick(upper);
-        let current = pool.tick_current();
-
-        if (i32::lt(current, lower)) {
-            (
-                sqrt_price_math::get_amount_a_delta(price_lower, price_upper, liquidity, true),
-                0,
-            )
-        } else if (i32::lt(current, upper)) {
-            (
-                sqrt_price_math::get_amount_a_delta(
-                    pool.sqrt_price_x64(),
-                    price_upper,
-                    liquidity,
-                    true,
-                ),
-                sqrt_price_math::get_amount_b_delta(
-                    price_lower,
-                    pool.sqrt_price_x64(),
-                    liquidity,
-                    true,
-                ),
-            )
-        } else {
-            (
-                0,
-                sqrt_price_math::get_amount_b_delta(price_lower, price_upper, liquidity, true),
-            )
-        }
+        pool.amounts_for_liquidity(pos.tick_lower(), pos.tick_upper(), liquidity, true)
     }
 
     fun check_deadline(clock: &Clock, deadline_ms: u64) {

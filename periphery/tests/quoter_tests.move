@@ -154,7 +154,7 @@ module haneul_amm_periphery::quoter_tests {
     }
 
     #[test]
-    #[expected_failure(abort_code = haneul_amm_periphery::quoter::EZeroAmount)]
+    #[expected_failure(abort_code = haneul_amm::pool::ESwapAmountZero)]
     fun zero_amount_aborts() {
         let (mut scenario, mut p) = setup::setup(3000);
         let pos = setup::fund_full_range(&mut p, L_BIG, scenario.ctx());
@@ -165,7 +165,7 @@ module haneul_amm_periphery::quoter_tests {
 
     #[test]
     #[expected_failure(
-        abort_code = haneul_amm_periphery::quoter::EPriceLimitAlreadyExceeded,
+        abort_code = haneul_amm::pool::EPriceLimitAlreadyExceeded,
     )]
     fun wrong_side_limit_aborts() {
         let (mut scenario, mut p) = setup::setup(3000);

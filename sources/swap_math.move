@@ -22,6 +22,8 @@ module haneul_amm::swap_math {
 
     /// Fee of 100% makes exact-output swaps impossible.
     const EFeeConsumesEverything: u64 = 0;
+    /// A fee amount does not fit a coin balance.
+    const EFeeOverflow: u64 = 1;
 
     public fun fee_scale(): u64 {
         FEE_SCALE
@@ -82,16 +84,19 @@ module haneul_amm::swap_math {
                     / (FEE_SCALE as u128)) as u64
             );
             // Input needed to reach the target price (round up: swapper
-            // pays at least the exact amount).
+            // pays at least the exact amount). Computed at full width:
+            // the amount may exceed a coin balance when the range is
+            // very deep, and then the budget simply stops short of the
+            // target instead of the swap failing.
             let amount_in_to_target = if (a_to_b) {
-                sqrt_price_math::get_amount_a_delta(
+                sqrt_price_math::get_amount_a_delta_wide(
                     sqrt_price_target,
                     sqrt_price_current,
                     liquidity,
                     true,
                 )
             } else {
-                sqrt_price_math::get_amount_b_delta(
+                sqrt_price_math::get_amount_b_delta_wide(
                     sqrt_price_current,
                     sqrt_price_target,
                     liquidity,
@@ -99,9 +104,9 @@ module haneul_amm::swap_math {
                 )
             };
 
-            if (amount_remaining_less_fee >= amount_in_to_target) {
+            if ((amount_remaining_less_fee as u256) >= amount_in_to_target) {
                 // Budget reaches the target price.
-                amount_in = amount_in_to_target;
+                amount_in = (amount_in_to_target as u64);
                 next_sqrt_price = sqrt_price_target;
                 fee_amount = if (fee_pips == FEE_SCALE) {
                     // 100% fee: everything is fee, no price movement
@@ -144,16 +149,17 @@ module haneul_amm::swap_math {
             };
         } else {
             assert!(fee_pips < FEE_SCALE, EFeeConsumesEverything);
-            // Output available down to the target price (round down).
+            // Output available down to the target price (round down),
+            // at full width for the same reason as the input above.
             let amount_out_to_target = if (a_to_b) {
-                sqrt_price_math::get_amount_b_delta(
+                sqrt_price_math::get_amount_b_delta_wide(
                     sqrt_price_target,
                     sqrt_price_current,
                     liquidity,
                     false,
                 )
             } else {
-                sqrt_price_math::get_amount_a_delta(
+                sqrt_price_math::get_amount_a_delta_wide(
                     sqrt_price_current,
                     sqrt_price_target,
                     liquidity,
@@ -162,8 +168,8 @@ module haneul_amm::swap_math {
             };
 
             let capped_out;
-            if (amount_remaining >= amount_out_to_target) {
-                capped_out = amount_out_to_target;
+            if ((amount_remaining as u256) >= amount_out_to_target) {
+                capped_out = (amount_out_to_target as u64);
                 next_sqrt_price = sqrt_price_target;
             } else {
                 capped_out = amount_remaining;
@@ -203,7 +209,7 @@ module haneul_amm::swap_math {
     fun mul_div_ceil_u64(a: u64, b: u64, d: u64): u64 {
         let n = (a as u128) * (b as u128);
         let r = n / (d as u128) + (if (n % (d as u128) > 0) 1 else 0);
-        assert!(r <= 0xFFFFFFFFFFFFFFFF, 1);
+        assert!(r <= 0xFFFFFFFFFFFFFFFF, EFeeOverflow);
         (r as u64)
     }
 }

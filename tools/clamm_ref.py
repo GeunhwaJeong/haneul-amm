@@ -142,15 +142,29 @@ def checked_shlw(n: int) -> int:
 def next_sqrt_price_from_amount_a_rounding_up(sqrt_price, liquidity, amount, add):
     if amount == 0:
         return sqrt_price
-    numerator = checked_shlw(liquidity * sqrt_price)
     liquidity_shl = liquidity << 64
     product = amount * sqrt_price
-    if add:
-        denominator = liquidity_shl + product
+    lp = liquidity * sqrt_price
+    if lp < (1 << 192):
+        numerator = lp << 64
+        if add:
+            denominator = liquidity_shl + product
+        else:
+            _require(liquidity_shl > product, "ENotEnoughLiquidity")
+            denominator = liquidity_shl - product
+        r = div_round(numerator, denominator, True)
     else:
-        _require(liquidity_shl > product, "ENotEnoughLiquidity")
-        denominator = liquidity_shl - product
-    r = div_round(numerator, denominator, True)
+        # Divide-first form with 63 extra fractional bits on the
+        # reserve; mirrors the Move fallback exactly.
+        scaled = liquidity << 127
+        reserve_a = scaled // sqrt_price
+        amount_scaled = amount << 63
+        if add:
+            denominator = reserve_a + amount_scaled
+        else:
+            _require(reserve_a > amount_scaled, "ENotEnoughLiquidity")
+            denominator = reserve_a - amount_scaled
+        r = div_round(scaled, denominator, True)
     _require(r <= MAX_U128, "EPriceOverflow")
     return r
 
@@ -188,22 +202,36 @@ def next_sqrt_price_from_output(sqrt_price, liquidity, amount_out, a_to_b):
     )
 
 
-def get_amount_a_delta(sqrt_price_0, sqrt_price_1, liquidity, round_up):
+DOES_NOT_FIT_U64 = 1 << 64
+
+
+def get_amount_a_delta_wide(sqrt_price_0, sqrt_price_1, liquidity, round_up):
     lo, hi = sorted((sqrt_price_0, sqrt_price_1))
     _require(lo > 0, "EInvalidInput")
     if liquidity == 0 or lo == hi:
         return 0
-    numerator = checked_shlw(liquidity * (hi - lo))
-    r = div_round(numerator, hi * lo, round_up)
+    scaled = liquidity * (hi - lo)
+    if scaled >= (1 << 192):
+        # Mirrors the Move sentinel: the true amount is >= 2^64.
+        return DOES_NOT_FIT_U64
+    return div_round(scaled << 64, hi * lo, round_up)
+
+
+def get_amount_b_delta_wide(sqrt_price_0, sqrt_price_1, liquidity, round_up):
+    lo, hi = sorted((sqrt_price_0, sqrt_price_1))
+    if liquidity == 0 or lo == hi:
+        return 0
+    return div_round(liquidity * (hi - lo), 1 << 64, round_up)
+
+
+def get_amount_a_delta(sqrt_price_0, sqrt_price_1, liquidity, round_up):
+    r = get_amount_a_delta_wide(sqrt_price_0, sqrt_price_1, liquidity, round_up)
     _require(r <= MAX_U64, "EAmountOverflow")
     return r
 
 
 def get_amount_b_delta(sqrt_price_0, sqrt_price_1, liquidity, round_up):
-    lo, hi = sorted((sqrt_price_0, sqrt_price_1))
-    if liquidity == 0 or lo == hi:
-        return 0
-    r = div_round(liquidity * (hi - lo), 1 << 64, round_up)
+    r = get_amount_b_delta_wide(sqrt_price_0, sqrt_price_1, liquidity, round_up)
     _require(r <= MAX_U64, "EAmountOverflow")
     return r
 
@@ -233,11 +261,11 @@ def compute_swap_step(
             amount_remaining * (FEE_SCALE - fee_pips) // FEE_SCALE
         )
         if a_to_b:
-            amount_in_to_target = get_amount_a_delta(
+            amount_in_to_target = get_amount_a_delta_wide(
                 sqrt_price_target, sqrt_price_current, liquidity, True
             )
         else:
-            amount_in_to_target = get_amount_b_delta(
+            amount_in_to_target = get_amount_b_delta_wide(
                 sqrt_price_current, sqrt_price_target, liquidity, True
             )
 
@@ -268,11 +296,11 @@ def compute_swap_step(
     else:
         _require(fee_pips < FEE_SCALE, "EFeeConsumesEverything")
         if a_to_b:
-            amount_out_to_target = get_amount_b_delta(
+            amount_out_to_target = get_amount_b_delta_wide(
                 sqrt_price_target, sqrt_price_current, liquidity, False
             )
         else:
-            amount_out_to_target = get_amount_a_delta(
+            amount_out_to_target = get_amount_a_delta_wide(
                 sqrt_price_current, sqrt_price_target, liquidity, False
             )
 

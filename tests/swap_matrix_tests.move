@@ -66,6 +66,8 @@ module haneul_amm::swap_matrix_tests {
             60,
             option::none(),
             0,
+            0,
+            0,
             PRICE_1,
             ctx,
         );

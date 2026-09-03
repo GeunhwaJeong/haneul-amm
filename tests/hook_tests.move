@@ -262,7 +262,7 @@ module haneul_amm::hook_tests {
     #[test]
     #[expected_failure(abort_code = haneul_amm::pool::ENotDynamicFee)]
     fun updating_fee_on_static_pool_aborts() {
-        let (mut scenario, mut p) = setup_hooked(pool::hook_on_swap(), 3000, false);
+        let (_scenario, mut p) = setup_hooked(pool::hook_on_swap(), 3000, false);
         p.update_lp_fee(test_hook::witness(), 500);
         abort 0
     }
@@ -270,7 +270,7 @@ module haneul_amm::hook_tests {
     #[test]
     #[expected_failure(abort_code = haneul_amm::pool::EWrongHook)]
     fun updating_fee_with_wrong_witness_aborts() {
-        let (mut scenario, mut p) = setup_hooked(pool::hook_on_swap(), 0, true);
+        let (_scenario, mut p) = setup_hooked(pool::hook_on_swap(), 0, true);
         p.update_lp_fee(test_hook::other_witness(), 500);
         abort 0
     }

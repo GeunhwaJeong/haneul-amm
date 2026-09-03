@@ -29,11 +29,23 @@ module haneul_amm::pool_tests {
         amm_init::init_for_testing(scenario.ctx());
         scenario.next_tx(ADMIN);
         let mut reg = scenario.take_shared<Registry>();
+        ensure_tier(&mut reg, &scenario, fee_pips, 60);
         registry::create_pool<COIN_A, COIN_B>(&mut reg, fee_pips, 60, PRICE_1, scenario.ctx());
         ts::return_shared(reg);
         scenario.next_tx(ADMIN);
         let p = scenario.take_shared<Pool<COIN_A, COIN_B>>();
         (scenario, p)
+    }
+
+    /// Enable a (fee, spacing) tier with the admin's capability if the
+    /// registry does not already have it. The suite exercises tiers
+    /// beyond the defaults (0.05% and 1% at spacing 60, a 100% fee).
+    fun ensure_tier(reg: &mut Registry, scenario: &ts::Scenario, fee_pips: u64, spacing: u32) {
+        if (!reg.is_fee_tier_enabled(fee_pips, spacing)) {
+            let cap = scenario.take_from_sender<ProtocolCap>();
+            reg.enable_fee_tier(&cap, fee_pips, spacing);
+            scenario.return_to_sender(cap);
+        };
     }
 
     /// Open a position and fund it, asserting the exact principal.
@@ -534,6 +546,7 @@ module haneul_amm::pool_tests {
         // A second pool with a different fee tier.
         scenario.next_tx(ADMIN);
         let mut reg = scenario.take_shared<Registry>();
+        ensure_tier(&mut reg, &scenario, 500, 60);
         registry::create_pool<COIN_A, COIN_B>(&mut reg, 500, 60, PRICE_1, scenario.ctx());
         ts::return_shared(reg);
         scenario.next_tx(ADMIN);
@@ -587,10 +600,11 @@ module haneul_amm::pool_tests {
         let (mut scenario, mut p) = setup(3000);
         scenario.next_tx(ADMIN);
         let mut reg = scenario.take_shared<Registry>();
+        ensure_tier(&mut reg, &scenario, 500, 60);
         registry::create_pool<COIN_A, COIN_B>(&mut reg, 500, 60, PRICE_1, scenario.ctx());
         ts::return_shared(reg);
         scenario.next_tx(ADMIN);
-        let mut p2 = scenario.take_shared<Pool<COIN_A, COIN_B>>();
+        let p2 = scenario.take_shared<Pool<COIN_A, COIN_B>>();
 
         // Position belongs to p2; feeding it to p must fail.
         let mut pos = p2.open_position(
@@ -606,7 +620,7 @@ module haneul_amm::pool_tests {
     #[test]
     #[expected_failure(abort_code = haneul_amm::tick::ETickMisaligned)]
     fun misaligned_position_ticks_abort() {
-        let (mut scenario, mut p) = setup(3000);
+        let (mut scenario, p) = setup(3000);
         let pos = p.open_position(
             i32::neg_from(61).bits(),
             i32::from(60).bits(),
@@ -619,7 +633,7 @@ module haneul_amm::pool_tests {
     #[test]
     #[expected_failure(abort_code = haneul_amm::pool::ENoLiquidityToReceiveFees)]
     fun donating_to_empty_pool_aborts() {
-        let (mut scenario, mut p) = setup(3000);
+        let (_scenario, mut p) = setup(3000);
         p.donate(
             balance::create_for_testing<COIN_A>(1),
             balance::create_for_testing<COIN_B>(0),

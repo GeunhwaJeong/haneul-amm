@@ -9,7 +9,7 @@ module haneul_amm_periphery::test_setup {
     use haneul::test_scenario as ts;
     use haneul_amm::haneul_amm as amm_init;
     use haneul_amm::i32;
-    use haneul_amm::pool::{Self, Pool};
+    use haneul_amm::pool::{Self, Pool, ProtocolCap};
     use haneul_amm::position::Position;
     use haneul_amm::registry::{Self, Registry};
     use haneul_amm::test_coins::{COIN_A, COIN_B};
@@ -34,6 +34,11 @@ module haneul_amm_periphery::test_setup {
         amm_init::init_for_testing(scenario.ctx());
         scenario.next_tx(ADMIN);
         let mut reg = scenario.take_shared<Registry>();
+        if (!reg.is_fee_tier_enabled(fee_pips, 60)) {
+            let cap = scenario.take_from_sender<ProtocolCap>();
+            reg.enable_fee_tier(&cap, fee_pips, 60);
+            scenario.return_to_sender(cap);
+        };
         registry::create_pool<COIN_A, COIN_B>(&mut reg, fee_pips, 60, 1 << 64, scenario.ctx());
         ts::return_shared(reg);
         scenario.next_tx(ADMIN);

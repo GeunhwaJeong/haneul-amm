@@ -18,7 +18,7 @@ module haneul_amm::boundary_tests {
     use haneul::test_scenario as ts;
     use haneul_amm::haneul_amm as amm_init;
     use haneul_amm::i32;
-    use haneul_amm::pool::{Self, Pool};
+    use haneul_amm::pool::{Self, Pool, ProtocolCap};
     use haneul_amm::registry::{Self, Registry};
     use haneul_amm::sqrt_price_math;
     use haneul_amm::test_coins::{COIN_A, COIN_B};
@@ -43,6 +43,9 @@ module haneul_amm::boundary_tests {
         amm_init::init_for_testing(scenario.ctx());
         scenario.next_tx(ADMIN);
         let mut reg = scenario.take_shared<Registry>();
+        let cap = scenario.take_from_sender<ProtocolCap>();
+        reg.enable_fee_tier(&cap, 3000, 1);
+        scenario.return_to_sender(cap);
         let price = tick_math::get_sqrt_price_at_tick(i32::from(DEEP_LOWER - 10));
         registry::create_pool<COIN_A, COIN_B>(&mut reg, 3000, 1, price, scenario.ctx());
         ts::return_shared(reg);
@@ -96,7 +99,7 @@ module haneul_amm::boundary_tests {
         let a = sqrt_price_math::get_amount_a_delta_wide(lo, hi, DEEP_L, true);
         let b = sqrt_price_math::get_amount_b_delta_wide(lo, hi, DEEP_L, true);
         assert!(a == (NEED_A_DEEP as u256));
-        assert!(b > (0xFFFFFFFFFFFFFFFF as u256));
+        assert!(b > 0xFFFFFFFFFFFFFFFFu256);
         assert!((DEEP_L as u256) * (lo as u256) >= (1 << 192));
         assert!(DEEP_L < tick::max_liquidity_per_tick(1));
     }

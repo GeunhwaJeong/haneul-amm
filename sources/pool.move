@@ -33,6 +33,24 @@
 /// must route through hook code, which may run arbitrary logic before
 /// and after and, on dynamic-fee pools, override the fee per swap.
 /// Which operation classes are gated is fixed forever at creation.
+///
+/// # Immutability
+///
+/// There is no pause switch and no administrative path that can hold
+/// or move liquidity: a provider can always remove a position and
+/// collect its fees, whatever the protocol capability holder does.
+/// The one lever the capability has over live pools is the version
+/// gate: publishing a new package version makes every pool refuse
+/// state changes until `migrate` is called on it, which is meant for
+/// upgrades, not for operations. State that a future version may need
+/// hangs off the pool's `id` as dynamic fields, so the object layout
+/// never has to change.
+///
+/// Flash loans are free and never hook-gated. Reserves are lent
+/// against a receipt that demands exact repayment in the same
+/// transaction, so the pool takes no risk and the loan touches no
+/// price or fee state; charging for it would only push the same
+/// capital toward the swap path, where it already pays the LP fee.
 module haneul_amm::pool {
     use haneul::balance::{Self, Balance};
     use haneul::event;
@@ -181,6 +199,8 @@ module haneul_amm::pool {
         is_dynamic_fee: bool,
         hook: Option<TypeName>,
         hook_permissions: u8,
+        protocol_fee_a_to_b: u64,
+        protocol_fee_b_to_a: u64,
         sqrt_price_x64: u128,
         tick_bits: u32,
     }
@@ -206,6 +226,10 @@ module haneul_amm::pool {
         liquidity_delta: u128,
         amount_a: u64,
         amount_b: u64,
+        /// The position's liquidity after this change.
+        position_liquidity: u128,
+        /// The pool's in-range liquidity after this change.
+        pool_liquidity: u128,
     }
 
     public struct FeesCollected has copy, drop {
@@ -252,20 +276,20 @@ module haneul_amm::pool {
         tick_spacing: u32,
         hook: Option<TypeName>,
         hook_permissions: u8,
+        protocol_fee_a_to_b: u64,
+        protocol_fee_b_to_a: u64,
         sqrt_price_x64: u128,
         ctx: &mut TxContext,
     ): Pool<A, B> {
-        assert!(
-            tick_spacing >= MIN_TICK_SPACING && tick_spacing <= MAX_TICK_SPACING,
-            ETickSpacingOutOfRange,
-        );
+        assert_tick_spacing(tick_spacing);
         if (is_dynamic_fee) {
             // The hook decides the fee; it starts at zero and can be
             // set in the same transaction that creates the pool.
             assert!(lp_fee_pips == 0, EDynamicFeeMustStartZero);
         } else {
-            assert!(lp_fee_pips <= swap_math::fee_scale(), ELpFeeTooLarge);
+            assert_lp_fee(lp_fee_pips);
         };
+        assert_protocol_fees(protocol_fee_a_to_b, protocol_fee_b_to_a);
         // Validates the price range and derives the starting tick.
         let tick_current = tick_math::get_tick_at_sqrt_price(sqrt_price_x64);
 
@@ -277,8 +301,8 @@ module haneul_amm::pool {
             hook,
             hook_permissions,
             lp_fee_pips,
-            protocol_fee_a_to_b: 0,
-            protocol_fee_b_to_a: 0,
+            protocol_fee_a_to_b,
+            protocol_fee_b_to_a,
             sqrt_price_x64,
             tick_current,
             liquidity: 0,
@@ -300,6 +324,8 @@ module haneul_amm::pool {
             is_dynamic_fee,
             hook,
             hook_permissions,
+            protocol_fee_a_to_b,
+            protocol_fee_b_to_a,
             sqrt_price_x64,
             tick_bits: tick_current.bits(),
         });
@@ -573,11 +599,7 @@ module haneul_amm::pool {
         fee_b_to_a_pips: u64,
     ) {
         pool.assert_version();
-        assert!(
-            fee_a_to_b_pips <= MAX_PROTOCOL_FEE_PIPS
-                && fee_b_to_a_pips <= MAX_PROTOCOL_FEE_PIPS,
-            EProtocolFeeTooLarge,
-        );
+        assert_protocol_fees(fee_a_to_b_pips, fee_b_to_a_pips);
         pool.protocol_fee_a_to_b = fee_a_to_b_pips;
         pool.protocol_fee_b_to_a = fee_b_to_a_pips;
         event::emit(ProtocolFeeSet {
@@ -774,6 +796,32 @@ module haneul_amm::pool {
     public fun hook_on_donate(): u8 { HOOK_ON_DONATE }
 
     public fun max_protocol_fee_pips(): u64 { MAX_PROTOCOL_FEE_PIPS }
+
+    public fun min_tick_spacing(): u32 { MIN_TICK_SPACING }
+
+    public fun max_tick_spacing(): u32 { MAX_TICK_SPACING }
+
+    /// Parameter validation shared with the registry, so that a fee
+    /// tier can be rejected when it is enabled rather than when the
+    /// first pool tries to use it.
+    public fun assert_tick_spacing(tick_spacing: u32) {
+        assert!(
+            tick_spacing >= MIN_TICK_SPACING && tick_spacing <= MAX_TICK_SPACING,
+            ETickSpacingOutOfRange,
+        );
+    }
+
+    public fun assert_lp_fee(lp_fee_pips: u64) {
+        assert!(lp_fee_pips <= swap_math::fee_scale(), ELpFeeTooLarge);
+    }
+
+    public fun assert_protocol_fees(fee_a_to_b_pips: u64, fee_b_to_a_pips: u64) {
+        assert!(
+            fee_a_to_b_pips <= MAX_PROTOCOL_FEE_PIPS
+                && fee_b_to_a_pips <= MAX_PROTOCOL_FEE_PIPS,
+            EProtocolFeeTooLarge,
+        );
+    }
 
     // === Internals: swaps ===
 
@@ -1085,6 +1133,8 @@ module haneul_amm::pool {
             liquidity_delta,
             amount_a,
             amount_b,
+            position_liquidity: pos.liquidity(),
+            pool_liquidity: pool.liquidity,
         });
         AddLiquidityReceipt {
             pool_id: pool.id.to_inner(),
@@ -1110,6 +1160,8 @@ module haneul_amm::pool {
             liquidity_delta,
             amount_a,
             amount_b,
+            position_liquidity: pos.liquidity(),
+            pool_liquidity: pool.liquidity,
         });
         (pool.balance_a.split(amount_a), pool.balance_b.split(amount_b))
     }

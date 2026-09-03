@@ -166,7 +166,7 @@ module haneul_amm::sequence_tests {
         let ctx = scenario.ctx();
         let mut l = ledger();
         let mut p = pool::new<COIN_A, COIN_B>(
-            3000, false, 60, option::none(), 0, PRICE_1, ctx,
+            3000, false, 60, option::none(), 0, 0, 0, PRICE_1, ctx,
         );
         let cap = pool::new_protocol_cap(ctx);
         p.set_protocol_fee(&cap, 1000, 1000);
@@ -232,7 +232,7 @@ module haneul_amm::sequence_tests {
         let ctx = scenario.ctx();
         let mut l = ledger();
         let mut p = pool::new<COIN_A, COIN_B>(
-            500, false, 60, option::none(), 0, PRICE_1, ctx,
+            500, false, 60, option::none(), 0, 0, 0, PRICE_1, ctx,
         );
 
         let mut pos_full = fund(
@@ -294,7 +294,7 @@ module haneul_amm::sequence_tests {
         let ctx = scenario.ctx();
         let mut l = ledger();
         let mut p = pool::new<COIN_A, COIN_B>(
-            3000, false, 60, option::none(), 0, PRICE_1, ctx,
+            3000, false, 60, option::none(), 0, 0, 0, PRICE_1, ctx,
         );
 
         let mut pos = fund(

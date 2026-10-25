@@ -22,13 +22,18 @@ output-funds-the-input routing all fall out of this one mechanism, and
 compile time instead of by a runtime counter.
 
 **Hooks as witness types.** A pool may be bound at creation to a hook:
-a witness type owned by another package. Operation classes the pool
-was configured to gate (swaps, liquidity changes, donations) then
-accept only the `*_with_hook` entry points, which demand an instance
-of the witness. Only the hook's package can construct its witness, so
-every gated operation must route through hook code. Which classes are
-gated is immutable after creation, and dynamic-fee pools let their
-hook re-tune the LP fee per pool or per swap.
+a witness type owned by another package. Binding takes both an
+instance of the witness and the `Publisher` of the package that
+defines it, so only the hook's deployer (or code the hook exposes for
+the purpose) can create pools for a hook, and a type anyone can
+construct, such as a primitive or another package's struct, can never
+be bound. Operation classes the pool was configured to gate (swaps,
+liquidity changes, donations) then accept only the `*_with_hook` entry
+points, which demand an instance of the witness. As long as the hook
+keeps its witness constructor private, every gated operation must
+route through hook code. Which classes are gated is immutable after
+creation, and dynamic-fee pools let their hook re-tune the LP fee per
+pool or per swap.
 
 **Positions as objects.** A liquidity position is an owned object.
 Ownership is the access control, wallets can display it, and other
@@ -95,7 +100,8 @@ control. Hookless pools must use an enabled fee tier, a (fee, tick
 spacing) pair; the registry starts with 0.01% / 1, 0.05% / 10,
 0.3% / 60 and 1% / 200, and the `ProtocolCap` holder can enable more
 but never disable one. Hooked pools choose freely, since the hook
-package consents to the pool it is bound to.
+package consents to the pool it is bound to and proves it with its
+`Publisher`.
 
 A protocol fee of up to 0.1% per direction is carved from the swap
 input before the LP fee. New pools start with the registry's default
@@ -120,7 +126,7 @@ cd periphery && haneul move test --build-env mainnet
 The `--build-env` flag selects the framework dependency set; the
 packages themselves have no environment-specific code.
 
-The core suite (132 tests) covers the math layer with reference-pinned
+The core suite (135 tests) covers the math layer with reference-pinned
 vectors, tick bitmap navigation, the full swap pipeline including tick
 crossing and fee attribution (a 192-case chained swap matrix and a
 ledger-identity sequence), receipt enforcement, hook gating, dynamic

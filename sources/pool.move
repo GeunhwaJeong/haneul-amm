@@ -26,13 +26,15 @@
 /// # Hooks
 ///
 /// A pool may be bound at creation to a hook: a witness type `W` from
-/// another package. For each operation class the pool was configured
-/// to gate, the plain entry point aborts and only the `*_with_hook`
-/// variant, which demands an instance of `W`, works. Since only the
-/// hook's package can construct its witness, every gated operation
-/// must route through hook code, which may run arbitrary logic before
-/// and after and, on dynamic-fee pools, override the fee per swap.
-/// Which operation classes are gated is fixed forever at creation.
+/// another package, bound only on presentation of that package's
+/// `Publisher` (see `registry::create_pool_with_hook`). For each
+/// operation class the pool was configured to gate, the plain entry
+/// point aborts and only the `*_with_hook` variant, which demands an
+/// instance of `W`, works. Provided the hook keeps `W`'s constructor
+/// private, every gated operation must route through hook code, which
+/// may run arbitrary logic before and after and, on dynamic-fee pools,
+/// override the fee per swap. Which operation classes are gated is
+/// fixed forever at creation.
 ///
 /// # Immutability
 ///

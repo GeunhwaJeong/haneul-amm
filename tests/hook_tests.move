@@ -5,12 +5,19 @@
 ///
 /// `test_hook` stands in for an external hook package: it owns two
 /// witness types and exposes them only through its own functions,
-/// exactly as a real hook module would.
+/// exactly as a real hook module would, plus the package's
+/// `Publisher` that its deployer would hold.
 #[test_only]
 module haneul_amm::test_hook {
+    use haneul::package::{Self, Publisher};
+
     public struct Hook has drop {}
 
     public struct OtherHook has drop {}
+
+    /// Claim token for the test publisher (a real package claims with
+    /// its one-time witness in `init`).
+    public struct HookPackage has drop {}
 
     public fun witness(): Hook {
         Hook {}
@@ -19,11 +26,16 @@ module haneul_amm::test_hook {
     public fun other_witness(): OtherHook {
         OtherHook {}
     }
+
+    public fun publisher(ctx: &mut TxContext): Publisher {
+        package::test_claim(HookPackage {}, ctx)
+    }
 }
 
 #[test_only]
 module haneul_amm::hook_tests {
     use haneul::balance;
+    use haneul::package;
     use haneul::test_scenario as ts;
     use haneul_amm::haneul_amm as amm_init;
     use haneul_amm::i32;
@@ -48,9 +60,11 @@ module haneul_amm::hook_tests {
         amm_init::init_for_testing(scenario.ctx());
         scenario.next_tx(ADMIN);
         let mut reg = scenario.take_shared<Registry>();
+        let publisher = test_hook::publisher(scenario.ctx());
         registry::create_pool_with_hook<COIN_A, COIN_B, test_hook::Hook>(
             &mut reg,
             test_hook::witness(),
+            &publisher,
             fee_pips,
             dynamic,
             60,
@@ -58,6 +72,7 @@ module haneul_amm::hook_tests {
             PRICE_1,
             scenario.ctx(),
         );
+        package::burn_publisher(publisher);
         ts::return_shared(reg);
         scenario.next_tx(ADMIN);
         let p = scenario.take_shared<Pool<COIN_A, COIN_B>>();
@@ -320,9 +335,11 @@ module haneul_amm::hook_tests {
         amm_init::init_for_testing(scenario.ctx());
         scenario.next_tx(ADMIN);
         let mut reg = scenario.take_shared<Registry>();
+        let publisher = test_hook::publisher(scenario.ctx());
         registry::create_pool_with_hook<COIN_A, COIN_B, test_hook::Hook>(
             &mut reg,
             test_hook::witness(),
+            &publisher,
             3000,
             false, // not dynamic
             60,
@@ -340,9 +357,11 @@ module haneul_amm::hook_tests {
         amm_init::init_for_testing(scenario.ctx());
         scenario.next_tx(ADMIN);
         let mut reg = scenario.take_shared<Registry>();
+        let publisher = test_hook::publisher(scenario.ctx());
         registry::create_pool_with_hook<COIN_A, COIN_B, test_hook::Hook>(
             &mut reg,
             test_hook::witness(),
+            &publisher,
             3000,
             false,
             60,
@@ -360,11 +379,85 @@ module haneul_amm::hook_tests {
         amm_init::init_for_testing(scenario.ctx());
         scenario.next_tx(ADMIN);
         let mut reg = scenario.take_shared<Registry>();
+        let publisher = test_hook::publisher(scenario.ctx());
         registry::create_pool_with_hook<COIN_A, COIN_B, test_hook::Hook>(
             &mut reg,
             test_hook::witness(),
+            &publisher,
             3000,
             true,
+            60,
+            pool::hook_on_swap(),
+            PRICE_1,
+            scenario.ctx(),
+        );
+        abort 0
+    }
+
+    #[test]
+    #[expected_failure(abort_code = haneul_amm::registry::EHookNotOwned)]
+    fun primitive_witness_aborts() {
+        // Anyone can produce a `u8`. Accepted as a hook, it would let
+        // anyone pass the pool's hook checks and set its LP fee.
+        let mut scenario = ts::begin(ADMIN);
+        amm_init::init_for_testing(scenario.ctx());
+        scenario.next_tx(ADMIN);
+        let mut reg = scenario.take_shared<Registry>();
+        let publisher = test_hook::publisher(scenario.ctx());
+        registry::create_pool_with_hook<COIN_A, COIN_B, u8>(
+            &mut reg,
+            0u8,
+            &publisher,
+            0,
+            true,
+            60,
+            0,
+            PRICE_1,
+            scenario.ctx(),
+        );
+        abort 0
+    }
+
+    #[test]
+    #[expected_failure(abort_code = haneul_amm::registry::EHookNotOwned)]
+    fun foreign_struct_witness_aborts() {
+        // A struct with a public constructor, from a package the
+        // publisher does not own.
+        let mut scenario = ts::begin(ADMIN);
+        amm_init::init_for_testing(scenario.ctx());
+        scenario.next_tx(ADMIN);
+        let mut reg = scenario.take_shared<Registry>();
+        let publisher = test_hook::publisher(scenario.ctx());
+        registry::create_pool_with_hook<COIN_A, COIN_B, std::string::String>(
+            &mut reg,
+            std::string::utf8(b"hook"),
+            &publisher,
+            0,
+            true,
+            60,
+            0,
+            PRICE_1,
+            scenario.ctx(),
+        );
+        abort 0
+    }
+
+    #[test]
+    #[expected_failure(abort_code = haneul_amm::registry::EHookNotOwned)]
+    fun publisher_of_another_package_aborts() {
+        // The genuine witness, but the publisher proves ownership of an
+        // unrelated package (the framework's), not the hook's.
+        let mut scenario = ts::begin(ADMIN);
+        amm_init::init_for_testing(scenario.ctx());
+        scenario.next_tx(ADMIN);
+        let mut reg = scenario.take_shared<Registry>();
+        let foreign = package::test_claim(object::id_from_address(@0x1), scenario.ctx());
+        registry::create_pool_with_hook<COIN_A, COIN_B, test_hook::Hook>(
+            &mut reg,
+            test_hook::witness(),
+            &foreign,
+            3000,
+            false,
             60,
             pool::hook_on_swap(),
             PRICE_1,
@@ -381,9 +474,11 @@ module haneul_amm::hook_tests {
         let mut reg = scenario.take_shared<Registry>();
         let plain_id =
             registry::create_pool<COIN_A, COIN_B>(&mut reg, 3000, 60, PRICE_1, scenario.ctx());
+        let publisher = test_hook::publisher(scenario.ctx());
         let hooked_id = registry::create_pool_with_hook<COIN_A, COIN_B, test_hook::Hook>(
             &mut reg,
             test_hook::witness(),
+            &publisher,
             3000,
             false,
             60,
@@ -391,6 +486,7 @@ module haneul_amm::hook_tests {
             PRICE_1,
             scenario.ctx(),
         );
+        package::burn_publisher(publisher);
         assert!(plain_id != hooked_id);
         assert!(reg.pool_count() == 2);
 

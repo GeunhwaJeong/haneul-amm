@@ -19,8 +19,9 @@
 /// enabled by the `ProtocolCap` holder and never disabled: pools that
 /// exist must stay creatable-looking to integrators. The registry
 /// starts with four: 0.01% / 1, 0.05% / 10, 0.3% / 60, 1% / 200.
-/// Hooked pools are exempt; a hook is a deployed package that has
-/// consented to the pool, not a typo.
+/// Hooked pools are exempt: creating one takes the hook package's
+/// `Publisher`, so a hooked pool is a deployment its hook consented
+/// to, not a typo.
 ///
 /// # Default protocol fee
 ///
@@ -29,6 +30,7 @@
 /// pool ever created; per-pool `set_protocol_fee` still overrides.
 module haneul_amm::registry {
     use haneul::event;
+    use haneul::package::Publisher;
     use haneul::table::{Self, Table};
     use haneul::vec_set::{Self, VecSet};
     use std::type_name::{Self, TypeName};
@@ -51,6 +53,9 @@ module haneul_amm::registry {
     const EFeeTierNotEnabled: u64 = 6;
     /// The tier is already enabled.
     const EFeeTierAlreadyEnabled: u64 = 7;
+    /// The hook witness is not a struct defined in the publisher's
+    /// package.
+    const EHookNotOwned: u64 = 8;
 
     const VERSION: u64 = 1;
 
@@ -132,16 +137,24 @@ module haneul_amm::registry {
         )
     }
 
-    /// Create a pool bound to hook witness `W`. Requiring an instance
-    /// of `W` means only the hook's own package can bind pools to it,
-    /// so a hook always consents to (and can configure) the pools it
-    /// supervises. `hook_permissions` fixes forever which operation
-    /// classes must route through the hook (see `pool::hook_on_*`).
-    /// `is_dynamic_fee` lets the hook adjust the LP fee later and
-    /// requires `lp_fee_pips == 0` at creation.
+    /// Create a pool bound to hook witness `W`. `hook_permissions`
+    /// fixes forever which operation classes must route through the
+    /// hook (see `pool::hook_on_*`). `is_dynamic_fee` lets the hook
+    /// adjust the LP fee later and requires `lp_fee_pips == 0` at
+    /// creation.
+    ///
+    /// Every later hook check compares only the type of `W`, so the
+    /// binding is sound only if nobody but the hook can produce a `W`.
+    /// An instance alone does not prove that: primitives, `String`,
+    /// `ID` and any struct with a public constructor have `drop` and
+    /// can be built by anyone. The caller must therefore also present
+    /// the `Publisher` of the package that defines `W`, which only the
+    /// hook's deployer holds (or lends out through the hook's own
+    /// code, if the hook wants anyone to be able to create its pools).
     public fun create_pool_with_hook<A, B, W: drop>(
         registry: &mut Registry,
         _witness: W,
+        publisher: &Publisher,
         lp_fee_pips: u64,
         is_dynamic_fee: bool,
         tick_spacing: u32,
@@ -149,6 +162,11 @@ module haneul_amm::registry {
         sqrt_price_x64: u128,
         ctx: &mut TxContext,
     ): ID {
+        // Checked first so primitives fail with this module's error
+        // rather than the type-name module's, which `from_package`
+        // raises when asked for a primitive's address.
+        assert!(!type_name::with_original_ids<W>().is_primitive(), EHookNotOwned);
+        assert!(publisher.from_package<W>(), EHookNotOwned);
         assert!(hook_permissions <= ALL_HOOK_PERMISSIONS, EInvalidHookPermissions);
         assert!(hook_permissions != 0 || is_dynamic_fee, EUselessHook);
         registry.register<A, B>(

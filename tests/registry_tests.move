@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 module haneul_amm::registry_tests {
+    use haneul::package;
     use haneul::test_scenario as ts;
     use haneul_amm::haneul_amm as amm_init;
     use haneul_amm::pool::{Pool, ProtocolCap};
@@ -171,9 +172,11 @@ module haneul_amm::registry_tests {
         let mut scenario = setup();
         let mut reg = scenario.take_shared<Registry>();
         // 0.07% at spacing 7 is no tier, but the hook consents.
+        let publisher = test_hook::publisher(scenario.ctx());
         registry::create_pool_with_hook<COIN_A, COIN_B, test_hook::Hook>(
             &mut reg,
             test_hook::witness(),
+            &publisher,
             700,
             false,
             7,
@@ -181,6 +184,7 @@ module haneul_amm::registry_tests {
             PRICE_1,
             scenario.ctx(),
         );
+        package::burn_publisher(publisher);
         assert!(reg.pool_count() == 1);
         ts::return_shared(reg);
         scenario.end();
